@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-git/go-git/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -235,5 +236,207 @@ func TestSaveConfig(t *testing.T) {
 		assert.Equal(t, testConfig.AutoYes, loadedConfig.AutoYes)
 		assert.Equal(t, testConfig.DaemonPollInterval, loadedConfig.DaemonPollInterval)
 		assert.Equal(t, testConfig.BranchPrefix, loadedConfig.BranchPrefix)
+	})
+}
+
+// Tests for the new per-project functionality
+
+func TestSetUseProjects(t *testing.T) {
+	// Save original state
+	originalUseProjects := useProjectsMode
+	defer func() { useProjectsMode = originalUseProjects }()
+
+	t.Run("enables projects mode", func(t *testing.T) {
+		SetUseProjects(true)
+		assert.True(t, useProjectsMode)
+	})
+
+	t.Run("disables projects mode", func(t *testing.T) {
+		SetUseProjects(false)
+		assert.False(t, useProjectsMode)
+	})
+}
+
+func TestGetStateDir(t *testing.T) {
+	// Save original state
+	originalUseProjects := useProjectsMode
+	defer func() { useProjectsMode = originalUseProjects }()
+
+	// Create temporary directories for testing
+	tempHome := t.TempDir()
+
+	// Override HOME environment
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempHome)
+	defer os.Setenv("HOME", originalHome)
+
+	t.Run("returns config dir in default mode", func(t *testing.T) {
+		SetUseProjects(false)
+
+		stateDir, err := GetStateDir()
+		assert.NoError(t, err)
+
+		configDir, err := GetConfigDir()
+		require.NoError(t, err)
+
+		assert.Equal(t, configDir, stateDir)
+		assert.True(t, strings.HasSuffix(stateDir, ".claude-squad"))
+	})
+
+	t.Run("returns project-specific dir in projects mode", func(t *testing.T) {
+		// Create a temporary git repository
+		repoDir := t.TempDir()
+		_, err := git.PlainInit(repoDir, false)
+		require.NoError(t, err)
+
+		// Change to the repo directory
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer os.Chdir(originalDir)
+
+		err = os.Chdir(repoDir)
+		require.NoError(t, err)
+
+		SetUseProjects(true)
+
+		stateDir, err := GetStateDir()
+		assert.NoError(t, err)
+
+		configDir, err := GetConfigDir()
+		require.NoError(t, err)
+
+		// Should be in projects subdirectory
+		assert.NotEqual(t, configDir, stateDir)
+		assert.True(t, strings.HasPrefix(stateDir, configDir))
+		assert.Contains(t, stateDir, "projects")
+
+		// Should contain a project hash
+		parts := strings.Split(stateDir, string(filepath.Separator))
+		assert.True(t, len(parts) >= 2)
+		projectHash := parts[len(parts)-1]
+		assert.Len(t, projectHash, 16) // We use first 16 chars of SHA256
+	})
+
+	t.Run("returns same dir for same git repo", func(t *testing.T) {
+		// Create a temporary git repository
+		repoDir := t.TempDir()
+		_, err := git.PlainInit(repoDir, false)
+		require.NoError(t, err)
+
+		// Create a subdirectory
+		subDir := filepath.Join(repoDir, "subdir")
+		err = os.MkdirAll(subDir, 0755)
+		require.NoError(t, err)
+
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer os.Chdir(originalDir)
+
+		SetUseProjects(true)
+
+		// Get state dir from repo root
+		err = os.Chdir(repoDir)
+		require.NoError(t, err)
+		stateDir1, err := GetStateDir()
+		assert.NoError(t, err)
+
+		// Get state dir from subdirectory
+		err = os.Chdir(subDir)
+		require.NoError(t, err)
+		stateDir2, err := GetStateDir()
+		assert.NoError(t, err)
+
+		// Should be the same
+		assert.Equal(t, stateDir1, stateDir2)
+	})
+
+	t.Run("returns different dirs for different git repos", func(t *testing.T) {
+		// Create two temporary git repositories
+		repoDir1 := t.TempDir()
+		_, err := git.PlainInit(repoDir1, false)
+		require.NoError(t, err)
+
+		repoDir2 := t.TempDir()
+		_, err = git.PlainInit(repoDir2, false)
+		require.NoError(t, err)
+
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer os.Chdir(originalDir)
+
+		SetUseProjects(true)
+
+		// Get state dir from repo 1
+		err = os.Chdir(repoDir1)
+		require.NoError(t, err)
+		stateDir1, err := GetStateDir()
+		assert.NoError(t, err)
+
+		// Get state dir from repo 2
+		err = os.Chdir(repoDir2)
+		require.NoError(t, err)
+		stateDir2, err := GetStateDir()
+		assert.NoError(t, err)
+
+		// Should be different
+		assert.NotEqual(t, stateDir1, stateDir2)
+	})
+
+	t.Run("fails when not in git repo in projects mode", func(t *testing.T) {
+		// Create a non-git directory
+		nonGitDir := t.TempDir()
+
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer os.Chdir(originalDir)
+
+		err = os.Chdir(nonGitDir)
+		require.NoError(t, err)
+
+		SetUseProjects(true)
+
+		_, err = GetStateDir()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to find git repository root")
+	})
+}
+
+func TestFindGitRepoRoot(t *testing.T) {
+	t.Run("finds repo root from subdirectory", func(t *testing.T) {
+		// Create a temporary git repository
+		repoDir := t.TempDir()
+		_, err := git.PlainInit(repoDir, false)
+		require.NoError(t, err)
+
+		// Create nested subdirectories
+		subDir := filepath.Join(repoDir, "level1", "level2", "level3")
+		err = os.MkdirAll(subDir, 0755)
+		require.NoError(t, err)
+
+		// Find repo root from nested subdirectory
+		foundRoot, err := findGitRepoRoot(subDir)
+		assert.NoError(t, err)
+		assert.Equal(t, repoDir, foundRoot)
+	})
+
+	t.Run("finds repo root from repo root", func(t *testing.T) {
+		// Create a temporary git repository
+		repoDir := t.TempDir()
+		_, err := git.PlainInit(repoDir, false)
+		require.NoError(t, err)
+
+		// Find repo root from repo root itself
+		foundRoot, err := findGitRepoRoot(repoDir)
+		assert.NoError(t, err)
+		assert.Equal(t, repoDir, foundRoot)
+	})
+
+	t.Run("fails when not in git repo", func(t *testing.T) {
+		// Create a non-git directory
+		nonGitDir := t.TempDir()
+
+		_, err := findGitRepoRoot(nonGitDir)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to find Git repository root")
 	})
 }
