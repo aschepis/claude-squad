@@ -2,16 +2,80 @@ package config
 
 import (
 	"claude-squad/log"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/go-git/go-git/v5"
 )
 
 const (
 	StateFileName     = "state.json"
 	InstancesFileName = "instances.json"
+	ProjectsDir       = "projects"
 )
+
+var (
+	useProjectsMode = false
+)
+
+// SetUseProjects enables or disables per-project state mode
+func SetUseProjects(enable bool) {
+	useProjectsMode = enable
+}
+
+// GetStateDir returns the directory where state should be stored
+// In projects mode, it creates a subdirectory based on the git repo root
+func GetStateDir() (string, error) {
+	configDir, err := GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+
+	if !useProjectsMode {
+		return configDir, nil
+	}
+
+	// Find git repository root
+	currentDir, err := filepath.Abs(".")
+	if err != nil {
+		return "", fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	repoRoot, err := findGitRepoRoot(currentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to find git repository root: %w", err)
+	}
+
+	// Generate project hash from repo root path
+	hash := sha256.Sum256([]byte(repoRoot))
+	projectHash := hex.EncodeToString(hash[:])[:16] // Use first 16 characters
+
+	projectDir := filepath.Join(configDir, ProjectsDir, projectHash)
+	return projectDir, nil
+}
+
+// findGitRepoRoot finds the root directory of the git repository
+func findGitRepoRoot(path string) (string, error) {
+	currentPath := path
+	for {
+		_, err := git.PlainOpen(currentPath)
+		if err == nil {
+			// Found the repository root
+			return currentPath, nil
+		}
+
+		parent := filepath.Dir(currentPath)
+		if parent == currentPath {
+			// Reached the filesystem root without finding a repository
+			return "", fmt.Errorf("failed to find Git repository root from path: %s", path)
+		}
+		currentPath = parent
+	}
+}
 
 // InstanceStorage handles instance-related operations
 type InstanceStorage interface {
@@ -55,13 +119,13 @@ func DefaultState() *State {
 
 // LoadState loads the state from disk. If it cannot be done, we return the default state.
 func LoadState() *State {
-	configDir, err := GetConfigDir()
+	stateDir, err := GetStateDir()
 	if err != nil {
-		log.ErrorLog.Printf("failed to get config directory: %v", err)
+		log.ErrorLog.Printf("failed to get state directory: %v", err)
 		return DefaultState()
 	}
 
-	statePath := filepath.Join(configDir, StateFileName)
+	statePath := filepath.Join(stateDir, StateFileName)
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -88,16 +152,16 @@ func LoadState() *State {
 
 // SaveState saves the state to disk
 func SaveState(state *State) error {
-	configDir, err := GetConfigDir()
+	stateDir, err := GetStateDir()
 	if err != nil {
-		return fmt.Errorf("failed to get config directory: %w", err)
+		return fmt.Errorf("failed to get state directory: %w", err)
 	}
 
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 
-	statePath := filepath.Join(configDir, StateFileName)
+	statePath := filepath.Join(stateDir, StateFileName)
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)

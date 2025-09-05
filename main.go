@@ -18,11 +18,12 @@ import (
 )
 
 var (
-	version     = "1.0.13"
-	programFlag string
-	autoYesFlag bool
-	daemonFlag  bool
-	rootCmd     = &cobra.Command{
+	version         = "1.0.13"
+	programFlag     string
+	autoYesFlag     bool
+	daemonFlag      bool
+	useProjectsFlag bool
+	rootCmd         = &cobra.Command{
 		Use:   "claude-squad",
 		Short: "Claude Squad - Manage multiple AI agents like Claude Code, Aider, Codex, and Amp.",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -48,6 +49,9 @@ var (
 			}
 
 			cfg := config.LoadConfig()
+
+			// Set use projects mode in config
+			config.SetUseProjects(useProjectsFlag)
 
 			// Program flag overrides config
 			program := cfg.DefaultProgram
@@ -81,6 +85,9 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log.Initialize(false)
 			defer log.Close()
+
+			// Set use projects mode for reset command too
+			config.SetUseProjects(useProjectsFlag)
 
 			state := config.LoadState()
 			storage, err := session.NewStorage(state)
@@ -119,15 +126,25 @@ var (
 			log.Initialize(false)
 			defer log.Close()
 
+			// Set use projects mode for debug command too
+			config.SetUseProjects(useProjectsFlag)
+
 			cfg := config.LoadConfig()
 
 			configDir, err := config.GetConfigDir()
 			if err != nil {
 				return fmt.Errorf("failed to get config directory: %w", err)
 			}
+
+			stateDir, err := config.GetStateDir()
+			if err != nil {
+				return fmt.Errorf("failed to get state directory: %w", err)
+			}
+
 			configJson, _ := json.MarshalIndent(cfg, "", "  ")
 
 			fmt.Printf("Config: %s\n%s\n", filepath.Join(configDir, config.ConfigFileName), configJson)
+			fmt.Printf("State Directory: %s\n", stateDir)
 
 			return nil
 		},
@@ -150,12 +167,20 @@ func init() {
 		"[experimental] If enabled, all instances will automatically accept prompts")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+
 		" and runs autoyes mode on them.")
+	rootCmd.Flags().BoolVar(&useProjectsFlag, "use-projects", false,
+		"Store state per-project based on git repository root")
 
 	// Hide the daemonFlag as it's only for internal use
 	err := rootCmd.Flags().MarkHidden("daemon")
 	if err != nil {
 		panic(err)
 	}
+
+	// Add the use-projects flag to reset and debug commands too
+	resetCmd.Flags().BoolVar(&useProjectsFlag, "use-projects", false,
+		"Store state per-project based on git repository root")
+	debugCmd.Flags().BoolVar(&useProjectsFlag, "use-projects", false,
+		"Store state per-project based on git repository root")
 
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
