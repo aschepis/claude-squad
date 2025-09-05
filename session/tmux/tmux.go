@@ -96,6 +96,8 @@ func (t *TmuxSession) Start(workDir string) error {
 
 	// Create a new detached tmux session and start claude in it
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", t.sanitizedName, "-c", workDir, t.program)
+	// Inherit environment variables from the parent process
+	cmd.Env = os.Environ()
 
 	ptmx, err := t.ptyFactory.Start(cmd)
 	if err != nil {
@@ -192,7 +194,9 @@ func (t *TmuxSession) Start(workDir string) error {
 
 // Restore attaches to an existing session and restores the window size
 func (t *TmuxSession) Restore() error {
-	ptmx, err := t.ptyFactory.Start(exec.Command("tmux", "attach-session", "-t", t.sanitizedName))
+	cmd := exec.Command("tmux", "attach-session", "-t", t.sanitizedName)
+	cmd.Env = os.Environ()
+	ptmx, err := t.ptyFactory.Start(cmd)
 	if err != nil {
 		return fmt.Errorf("error opening PTY: %w", err)
 	}

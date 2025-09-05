@@ -86,3 +86,54 @@ func TestStartTmuxSession(t *testing.T) {
 	_, err = ptyFactory.files[1].Stat()
 	require.NoError(t, err)
 }
+
+func TestEnvironmentVariablePropagation(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+
+	created := false
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(cmd.String(), "has-session") && !created {
+				created = true
+				return fmt.Errorf("session already exists")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			return []byte("output"), nil
+		},
+	}
+
+	// Set a test environment variable
+	testEnvVar := "CLAUDE_SQUAD_TEST_ENV_VAR"
+	testEnvValue := "test_value_12345"
+	os.Setenv(testEnvVar, testEnvValue)
+	defer os.Unsetenv(testEnvVar)
+
+	workdir := t.TempDir()
+	session := newTmuxSession("env-test-session", "claude", ptyFactory, cmdExec)
+
+	err := session.Start(workdir)
+	require.NoError(t, err)
+	require.Equal(t, 2, len(ptyFactory.cmds))
+
+	// Check that the new-session command has environment variables
+	newSessionCmd := ptyFactory.cmds[0]
+	require.NotNil(t, newSessionCmd.Env, "Environment should be set for new-session command")
+
+	// Check that our test environment variable is present
+	foundEnvVar := false
+	for _, env := range newSessionCmd.Env {
+		if strings.HasPrefix(env, testEnvVar+"=") {
+			expectedEnv := testEnvVar + "=" + testEnvValue
+			require.Equal(t, expectedEnv, env, "Test environment variable should be correctly propagated")
+			foundEnvVar = true
+			break
+		}
+	}
+	require.True(t, foundEnvVar, "Test environment variable should be present in command environment")
+
+	// Check that the attach-session command also has environment variables
+	attachCmd := ptyFactory.cmds[1]
+	require.NotNil(t, attachCmd.Env, "Environment should be set for attach-session command")
+}
